@@ -18,12 +18,15 @@ letter rotates per save). Files are nominally **1,433,088 bytes** plus
 | Offset | Size | What |
 |---|---|---|
 | `0x0000` | 20 bytes | ASCII header ending in `"SHOWDATA"` |
-| `0x0014` | 1 byte | **Slot letter** (`'A'`, `'B'`, `'C'`, …) — matches the file's name on USB |
-| `0x0015..0x001D` | ? | header padding / unknown |
+| `0x0014..0x001D` | 10 bytes | **Slot name** (ASCII, NUL-padded). Console rotates A→B→…→Z→AA→AB→…→AAAAA-AA, etc. Matches USB filename. Verified G=`"G"`, AA=`"AA"`, AAAAA-AA=`"AAAAA-AA"` |
+| `0x009C` | 6 bytes | **Personality counter array.** Decrements on each personality deletion. G=`09 09 09 09 0A 0A` (10 personalities), AA=`08 08 08 08 09 09`, AAAAA-AA=`07 07 07 07 08 08`. Mirrored at `0x60840` |
+| `~0x0110` | bytes | **Personality slot permutation/order array.** On deletion, deleted slot is zeroed and following entries shift. Mirrored at `~0x60800` |
 | `~0x001E` | 80 × `u16 LE` (= 160 B) | **DMX-address table**, indexed by `dimmer_id`. Entry = DMX channel, `0` = unpatched |
 | `~0x0338` | sorted `u16[]` | **Global active-dimmer list** (sorted by `dimmer_id`) |
 | `0x4076` | `u16 LE` | Pointer / offset (value `0x1271` once first dimmer is patched) |
-| `0x61000` | 0x800 × N | **Personality library** — compiled R20 fixture profiles, 2 KiB per slot. ASCII device name at slot start. See "Personality slot map" below |
+| `0x60878` | 60 × `u16 LE` | **Fixture→DMX patch table** (canonical, AA-era). Indexed by fixture handle (1..60). Verified across AA: PARINER 1–4 = `1,7,13,19`; FRESNEL 5–8 = `30,36,42,48`; CENTCM250 9+ = `54,63,…`; CNTCM72 = `115,129,143`; DIMMER 101–120 = `181..200`. The earlier `0x1E` table appears to be a legacy mirror |
+| `0x61000` | 0x800 × N | **Personality library** — compiled R20 fixture profiles, 2 KiB per slot. ASCII device name at slot start. **Deletion does NOT clear the slot's name** — bookkeeping lives in counters/permutation arrays elsewhere. See "Personality slot map" below |
+| `file_size − 0x800` (e.g. `0x161000`) | 0x800 | **Trailer / "next save" header.** Magic `"KINGKONG1024SHOWDATA"` followed by next slot name + a partial copy of the patch table. Empty when no further save is queued |
 | `0xC4000` | 0x1000 × N | **Scene region** — each recorded scene occupies one 4096-byte slot, appended in record order |
 | `0xC4000 + N*0x1000` | rest | "Library / fixture-profile" region (recognisable by patterns `64 00 60 EA …`, `E0 00 FF 00 …`, `B8 00 11 …`). Pushed forward by 0x1000 each time a scene is recorded |
 
