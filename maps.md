@@ -329,3 +329,61 @@ instead of `0x3C` and DMX `5` written at `0x94` instead of `0x96`.)
 - Carved files: `dumps/{A,B,C,D,E}.KKD` (gitignored). Produced by
   `cargo run -- carve dumps/dump.imp <NAME>.KKD dumps/<NAME>.KKD`.
 - Diffs: `cargo run -- diff dumps/X.KKD dumps/Y.KKD`.
+
+---
+
+## Coverage — every byte of A.KKD (baseline, 0x15DE00 = 1,433,088 bytes)
+
+This walks the whole file end-to-end. Each row is a contiguous region with
+its decode status. **Decoded** = field/structure understood. **Partial** =
+shape known (offset, stride) but per-byte semantics unclear. **Unknown** =
+populated bytes whose purpose is undetermined. **Zero** = always 0 in every
+saved file we have, no decoded purpose.
+
+| File range | Size | Status | What it is / what's unknown |
+|---|---:|---|---|
+| `0x000000..0x000014` | 20 B | **Decoded** | ASCII `"SHOWDATA"` header + 12 padding |
+| `0x000014..0x00001E` | 10 B | **Decoded** | Slot name (rotates A→…→Z→AA→…) |
+| `0x00001E..0x00003E` | 32 B | **Partial** | Start of fixture-related u16 LE table; positions roughly correspond to dimmer-bank 1 entries. Earlier "DMX-address table @ 0x1E indexed by fixture_id" verified for fixture_id 60 only — full extent and layout still unconfirmed |
+| `0x00003E..0x00009C` | 94 B | **Unknown** | Sorted DMX-channel list lives somewhere in here (verified entries `BB..C8` at `~0x54..0x77` representing DMX 187–200). Exact base + stride + length not pinned |
+| `0x00009C..0x0000A2` | 6 B | **Decoded** | Personality counter array (G=`09 09 09 09 0A 0A`, decrements per personality deletion) |
+| `0x0000A2..0x0000AC` | 10 B | **Unknown** | Likely additional patch counters/flags |
+| `0x0000AC..0x0000B6` | ~10 B | **Partial** | Per-personality patched-fixture counter (one byte per personality slot). Confirmed `+1` at `0xAC` when first PARINER patched. Width = 10 bytes assumed (one per personality) but not byte-walked |
+| `0x0000B6..0x000110` | ~90 B | **Unknown** | Mostly populated. Headers/flags. Untouched by patch/scene operations in our diffs |
+| `0x000110..0x000130` | ~32 B | **Partial** | Personality slot permutation/order array. Mirrored at `~0x60800`. Layout in flux |
+| `0x000130..0x000338` | ~520 B | **Unknown** | Big undecoded block. Some bytes change with global state, no individual fields decoded |
+| `0x000338..0x000400` | ~200 B | **Partial** | Global active-dimmer list (sorted u16 LE). Verified inserts/removes for fixture_id 60. Exact base + length not pinned |
+| `0x000400..0x000498` | ~150 B | **Unknown** | |
+| `0x000498..0x000500` | ~100 B | **Decoded** | Sorted fixture_id list (u16 LE). Verified across patch/delete cycles |
+| `0x000500..0x004028` | ~14.5 KB | **Unknown** | Largely zero in A baseline. Some bytes populate when fixtures patched. No structure decoded |
+| `0x004028..0x004078` | 80 B | **Decoded** | Per-fixture record-pointer table (u16 LE, indexed by fixture handle, stride 2). Pointers like `0x0641, 0x0691, …` step by `0x50` into a per-fixture record region |
+| `0x004078..0x004400` | ~900 B | **Unknown** | |
+| `0x004400..0x060100` | ~368 KB | **Partial — large striped pattern** | Periodic structure with **stride `0x1800` (6144 bytes)** — populated `+0x000..+0x900` (2304 bytes), zero `+0x900..+0x1800` (3840 bytes). ~60–61 blocks total. Almost certainly the **per-fixture record region** that `0x4028` pointers index into (60 fixtures × 0x1800 ≈ 90 KB; rest may be padding or extra blocks). **Personality_id, channel inversions, fade times, palette per fixture probably live here.** This is the single highest-value undecoded region |
+| `0x060100..0x060800` | ~1.8 KB | **Unknown** | |
+| `0x060800..0x060846` | ~70 B | **Decoded** | Mirror of `~0x110` slot permutation + `0x9C` counters |
+| `0x060846..0x060878` | ~50 B | **Unknown** | |
+| `0x060878..0x0608F0` | 120 B | **Decoded** | **Canonical fixture→DMX patch table** (60 × u16 LE, indexed by fixture handle). Verified end-to-end |
+| `0x0608F0..0x060D00` | ~1 KB | **Partial** | Continuation of patch metadata: secondary lists at `0x60896` (e.g. `73 81 8F`), `0x608EE` (timing-like values), `0x60978`–`0x609C2` (per-fixture flag arrays), `0x60BB4`–`0x60C30` (`FF`-marker arrays), `0x60C30..0x60C2F` (free-list indicators), `0x60CB0`–`0x60D6E` (4-channel groupings per patched fixture). Each piece is **observed but not formally decoded** |
+| `0x060D00..0x061000` | ~768 B | **Unknown** | |
+| `0x061000..0x066000` | 20 KB | **Decoded** | **Personality library** — 10 × `0x800` (2 KiB) slots. ASCII device name at slot start; rest is the compiled R20 binary (parser not written; we read R20 source directly). Deletion does **not** clear the slot |
+| `0x066000..0x070C00` | ~43 KB | **Unknown — large** | Always populated in baseline A.KKD with similar template-like content. Could be additional personality slots (firmware-shipped library), fixture-attribute defaults, palette tables, or boot/menu state. **Untouched by any patch/scene/chase save we have**, so single-variable diffs can't reach it |
+| `0x070C00..0x08EC00` | 120 KB | **Decoded** | **Playback-fader index table.** 120 × `0x400` entries indexed by `page*12 + fader`. Per-entry layout decoded for `+0x00 part_count`, 3 timing pairs, slot-id array at `+0x18`. Bytes `+0x1B..+0x3FF` of each entry are **mostly zero/template, not decoded** — could hold per-fader name, attribute filter, follow links |
+| `0x08EC00..0x093000` | ~17 KB | **Unknown — large** | Between index table end and record region start. Populated even at baseline. Possibly: palette pages, group definitions, fixture-aliases, menu state. **Untouched by saves**, dead-zone for diff-driven discovery |
+| `0x093000..0x15C500` | ~870 KB | **Partial** | **Slot record region.** 128 slots × `0x1000` bytes. Each slot is **pre-populated with template data even when "unused"** (~1280 non-zero bytes at the start of every slot in A baseline). Decoded inside a recorded scene/chase: header at `+0x000`, flags at `+0x1B3` and `+0x1EF`, level byte at `+0x3EF` (DMX-channel-indexed level array hypothesis: `+0x3EA + dmx_channel`). **Everything else inside a 4 KiB record (≈ 4080 of 4096 bytes) is undecoded.** Includes: scene name, fade in/out, snap channels, HTP/LTP overrides, attribute filter, scene chase parameters per part, link to next, etc. |
+| `0x15C500..` to file end | ~6 KB | **Partial** | Trailer area. In files with a queued next save, includes `KINGKONG1024SHOWDATA<next_slot_name>` magic + partial patch-table copy in the **last `0x800` of the file** (file_size − 0x800). Surrounding bytes of trailer not decoded. Exact start and total size of trailer unverified |
+
+### Roll-up
+
+| Status | Approx. coverage |
+|---|---:|
+| **Decoded** (field-level understanding) | ~150 KB |
+| **Partial** (shape/region known, contents unclear) | ~1 MB (mostly the slot records + striped per-fixture region + index entry interiors) |
+| **Unknown** (populated bytes, no current hypothesis) | ~70 KB (the 0x66000..0x70C00 and 0x8EC00..0x93000 dead zones plus various small gaps) |
+| **Always-zero in A baseline** | ~285 KB |
+
+### Highest-value targets next
+
+1. **`0x004400..0x060100` per-fixture record region (stride `0x1800`).** Deref a pointer from `0x4028` and walk one fixture's record. This is where `personality_id`, channel inversions, fade times, palette etc. almost certainly live. Diff a save where one fixture's personality is changed in place to localise `personality_id`.
+2. **Inside the slot record (`0x1000` bytes) past the level array.** A scene with non-default fade-in / fade-out / snap settings should expose those fields. A scene with a name should expose the name field.
+3. **`0x066000..0x070C00`** and **`0x08EC00..0x093000`** dead zones. These need diffs against operations we haven't tried (palette save, group create, console preferences). Hard to attack with the test saves we have.
+4. **R20 → 2 KiB compiled personality slot.** Comparing the original R20 text with the bytes at `0x61000` could decode personality compilation. Useful only when round-trip writing is needed.
