@@ -22,6 +22,10 @@ letter rotates per save). Files are nominally **1,433,088 bytes** plus
 | `0x009C` | 6 bytes | **Personality counter array.** Decrements on each personality deletion. G=`09 09 09 09 0A 0A` (10 personalities), AA=`08 08 08 08 09 09`, AAAAA-AA=`07 07 07 07 08 08`. Mirrored at `0x60840` |
 | `~0x0110` | bytes | **Personality slot permutation/order array.** On deletion, deleted slot is zeroed and following entries shift. Mirrored at `~0x60800` |
 | `~0x001E` | 80 × `u16 LE` (= 160 B) | **DMX-address table**, indexed by `dimmer_id`. Entry = DMX channel, `0` = unpatched |
+| `~0x0040` | sorted `u16 LE[]` | **Sorted DMX-channel list** (ascending). Lists every patched DMX start address. AC→BA: insert `C3 00` (=195) at position 4. AAAAA-AA→AB: removed `BF..C8` (=191..200) when fixtures 111–120 deleted |
+| `~0x00AC` | bytes | **Per-personality patched-fixture counter** (one byte per personality slot). AC→BA `+1` at offset `0xAC` when PARINER got first patch |
+| `~0x0498` | sorted `u16 LE[]` | **Sorted fixture_id list** (ascending). AB→AC removed `15..1E` (=21..30 = fixtures 101–110); AAAAA-AA→AB removed `1F..28` (=31..40 = fixtures 111–120) |
+| `~0x4028` | `u16 LE[]` | **Per-fixture record-pointer table.** AB→AC removed 10 pointers `0x0641, 0x0691, 0x06E1, … (stride 0x50)`. AC→BA reused `0x0641` for the new PARINER patch. Pointers point into a per-fixture record region with **80-byte stride** |
 | `~0x0338` | sorted `u16[]` | **Global active-dimmer list** (sorted by `dimmer_id`) |
 | `0x4076` | `u16 LE` | Pointer / offset (value `0x1271` once first dimmer is patched) |
 | `0x60878` | 60 × `u16 LE` | **Fixture→DMX patch table** (canonical, AA-era). Indexed by fixture handle (1..60). Verified across AA: PARINER 1–4 = `1,7,13,19`; FRESNEL 5–8 = `30,36,42,48`; CENTCM250 9+ = `54,63,…`; CNTCM72 = `115,129,143`; DIMMER 101–120 = `181..200`. The earlier `0x1E` table appears to be a legacy mirror |
