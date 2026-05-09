@@ -129,30 +129,27 @@ which model predicts the second level byte's position correctly.
 > master / grand-master scaling at playback time — it is independent of what
 > level was stored.
 
-### Playback-fader index entry — generalised (scenes & chases)
+### Playback-fader index entry — generalised (scenes & chases) — VERIFIED
 
 The 1024-byte index entry at `0x70C00 + (page*12 + slot)*0x400` is a
 **playback-fader entry** that supports both single-step (scene) and
-multi-step (chase) recordings. New layout (BC.KKD chase confirms):
+multi-step (chase) recordings. Layout verified across D/E/F/G/BC:
 
 ```
-+0x00  u16 LE   part_count             (1 = scene, ≥2 = chase)
-+0x02  u16+u16  timing 1: ?, 0xEA60    (default ~60 s constant)
-+0x06  u16+u16  timing 2: ?, 0xEA60
-+0x0A  u16+u16  timing 3: ?, 0xEA60
-+0x0E..0x17     bookkeeping flags / counters
-+0x18  u16 LE × part_count   slot_id array (one per chase step)
++0x00  u16 LE          part_count                 (1 = scene, ≥2 = chase)
++0x02  u16 + u16 LE    timing 1: <val>, 0xEA60    (0xEA60 = 60000 const)
++0x06  u16 + u16 LE    timing 2: <val>, 0xEA60
++0x0A  u16 + u16 LE    timing 3: <val>, 0xEA60
++0x0E..0x15            bookkeeping (zeros in all observed)
++0x16  u16 LE          part_count (duplicate / mirror of +0x00)
++0x18  u16 LE × N      slot_id array (one per chase step / scene)
 ```
 
 Each `slot_id` references a 4 KiB record at `0x93000 + slot_id * 0x1000` —
 the same flat record region used for scenes.
 
-**Earlier rule** (`slot_id = byte at index_entry+0x16`) was a single-part
-special case. The byte that landed at `+0x16` for scenes 5/11, 5/10, 5/9, 5/8
-appears to have been the low byte of the slot-id-array header, not the slot
-id itself. The new model places the slot-id array at `+0x18` for both scenes
-and chases. Re-verifying the early scene saves under this new layout is a
-TODO.
+The `+0x02 / +0x06 / +0x0A` first words are zero for D/E/F/G (default scene
+timings) and `0x0064` (= 100) for the BC chase — likely fade/wait/etc.
 
 ### Chase example — BC.KKD (page 5 / no 7, 2 parts)
 
@@ -169,45 +166,40 @@ Recorded levels: part 1 has `0xFF` (255), part 2 has `0x9C` (156) at the
 same level-array position — consistent with each part being a full level
 frame.
 
-### Scene record locator — original single-part rule (to re-verify)
+### Scene/chase record locator (final)
 
 ```
-index_entry  = 0x70C00 + (page * 12 + scene_num) * 0x400
-slot_id      = byte at (index_entry + 0x16)   ← may actually be +0x18, see above
-scene_record = 0x93000 + slot_id * 0x1000
+index_entry  = 0x70C00 + (page * 12 + slot_num) * 0x400
+part_count   = u16 LE at (index_entry + 0x00)        // also mirrored at +0x16
+slot_ids[i]  = u16 LE at (index_entry + 0x18 + i*2)  // i = 0..part_count-1
+record[i]    = 0x93000 + slot_ids[i] * 0x1000
 ```
 
-Verified against all four test saves:
+Verified raw bytes:
 
-| Scene | slot_id at index_entry+0x16 | Computed scene_record | Observed |
-|---|---|---|---|
-| 5/11 | `0x31` (49) | `0x93000 + 49 * 0x1000 = 0xC4000` | `0xC4000` ✓ |
-| 5/10 | `0x32` (50) | `0xC5000` | `0xC5000` ✓ |
-| 5/9  | `0x58` (88) | `0xEB000` | `0xEB000` ✓ |
-| 5/8  | `0x59` (89) | `0xEC000` | `0xEC000` ✓ |
+| Save | Index entry | Bytes 0x00..0x1B (key fields highlighted) |
+|------|-------------|-------------------------------------------|
+| D 5/11 | `0x82800` | `01 00` 00 00 60 EA 00 00 60 EA 00 00 60 EA 00 00 00 00 00 00 00 00 `01 00` `31 00` |
+| E 5/10 | `0x82400` | `01 00` … `01 00` `32 00` |
+| F 5/9  | `0x82000` | `01 00` … `01 00` `58 00` |
+| G 5/8  | `0x81C00` | `01 00` … `01 00` `59 00` |
+| BC 5/7 | `0x81800` | `02 00` `64 00` 60 EA `64 00` 60 EA `64 00` 60 EA 01 00 00 00 00 00 00 00 `02 00` `5A 00` `5B 00` |
 
-The reason scene 5/9 took slot 88 (not 51) when only two prior scenes existed
-is still unclear — likely B's untouched layout reserves only certain slots as
-"free for scene records" and the firmware allocates in a fixed order from
-that free-list. More test recordings (e.g. patches across different pages)
-would let us derive the slot-allocation order.
+Slot-id resolution (`+0x18` u16 LE) → record offset (`0x93000 + slot_id*0x1000`):
 
-### Per-scene index table at `~0x82000` (stride `0x400`)
-
-A separate 1024-byte-per-scene index table grows **backward** in the file as
-new scenes are added:
-
-| Save | Index entry offset | Byte at +0x16 |
+| Save | slot_id | record offset |
 |---|---|---|
-| D (scene 5/11) | `0x82800` | `0x31` |
-| E (scene 5/10) | `0x82400` | `0x32` |
-| F (scene 5/9)  | `0x82000` | `0x58` |
-| G (scene 5/8)  | `0x81C00` | `0x59` |
+| D 5/11 | 49 | `0xC4000` ✓ |
+| E 5/10 | 50 | `0xC5000` ✓ |
+| F 5/9  | 88 | `0xEB000` ✓ |
+| G 5/8  | 89 | `0xEC000` ✓ |
+| BC 5/7 part 1 | 90 | `0xED000` ✓ |
+| BC 5/7 part 2 | 91 | `0xEE000` ✓ |
 
-Each entry begins with `01 00 00 00 60 EA 00 00 60 EA 00 00 60 EA 00 00`
-(matches scene-header magic). The semantics of the byte at `+0x16` aren't
-clear yet — values 0x31, 0x32, 0x58 don't directly map to scene number, level,
-or page.
+The reason F (scene 5/9) jumped to slot 88 instead of 51 is still unclear —
+likely B's pre-existing layout reserves only certain slots as free for
+record allocation, and the firmware allocates in a fixed order from that
+free-list.
 
 ### Earlier wrong hypotheses (retracted)
 
