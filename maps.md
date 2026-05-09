@@ -28,6 +28,7 @@ letter rotates per save). Files are nominally **1,433,088 bytes** plus
 
 ### Mini Pearl 512A spec (per user)
 
+- **One DMX universe — 512 DMX channels** (the "512" in the name).
 - **3 fixture pages × 20 fixtures = 60 fixture handles.** Display numbers are
   `1–20`, `101–120`, `201–220` (gaps between banks).
 - **10 playback pages × 12 faders per page = 120 scene slots.** Pages and
@@ -69,7 +70,7 @@ Confirmed in-scene offsets (offsets relative to `scene_base`):
 | `+0x000` | `00 00 60 EA 00 00 60 EA 00 00 60 EA 00` | Scene header — three `(u16 ?, u16 0xEA60)` pairs + 1 byte. `0xEA60 = 60000` is a constant (probably default fade/wait time, ~60s) |
 | `+0x1B3` | `0x07` (when scene has ≥1 dimmer) | Flag — possibly "scene populated" |
 | `+0x1EF` | `0x01` (when scene has ≥1 dimmer) | Flag/count — likely "active dimmer count" |
-| **`+0x3EF`** | **1 byte = literal DMX level (0–255)** for `dimmer_id = 60` | **Dimmer level** — verified across 3 scenes with 3 different stored levels (see below) |
+| **`+0x3EF`** | **1 byte = literal DMX level (0–255)** for the channel patched to fixture 220 (DMX channel **5**) | **Level** — verified across 3 scenes with 3 different stored levels (see below). Almost certainly part of a **512-byte level array indexed by DMX channel**, with `level_base ≈ +0x3EA` so `+0x3EA + 5 = +0x3EF` (Mini Pearl 512A is single-universe / 512 channels — storing the array DMX-channel-indexed lets the console ship it straight to the wire on playback) |
 
 ### Level field — verified
 
@@ -80,11 +81,17 @@ Confirmed in-scene offsets (offsets relative to `scene_base`):
 | F | 5/9  | 255 | `0xEB000` | `0xFF` |
 | G | 5/8  | 50  | `0xEC000` | `0x32` |
 
-So **`level_byte = scene_base + 0x3EF + (dimmer_id − 60)`** if stride is 1 byte
-per dimmer (likely — a single byte can hold the full DMX 0–255 range; the
-diff-window of 58 bytes around the level fits an 80-dimmer × 1-byte array). The
-exact base of the level array (`scene_base + ~0x3B3` if stride 1) is not yet
-proven for any other dimmer; need a save that patches a 2nd dimmer.
+**Leading hypothesis (DMX-channel-indexed):**
+`level_byte = scene_base + 0x3EA + (dmx_channel)` (1-indexed channels, 512
+total → 512-byte array spanning `+0x3EA..+0x5EA`). With our test fixture at
+DMX 5 this gives `+0x3EA + 5 = +0x3EF` ✓.
+
+**Alternative (fixture-id-indexed):** `level_byte = scene_base + 0x3B3 + fixture_id`.
+Also fits the data we have so far because we only ever patched fixture_id 60.
+
+To disambiguate in one save: patch a second fixture at a clearly different
+DMX address (e.g. DMX 100), record a scene with both at known levels, and see
+which model predicts the second level byte's position correctly.
 
 > Stored values are raw DMX bytes (0–255). On the console "100% playback" is a
 > master / grand-master scaling at playback time — it is independent of what
