@@ -23,7 +23,7 @@ letter rotates per save). Files are nominally **1,433,088 bytes** plus
 | `~0x001E` | 80 × `u16 LE` (= 160 B) | **DMX-address table**, indexed by `dimmer_id`. Entry = DMX channel, `0` = unpatched |
 | `~0x0338` | sorted `u16[]` | **Global active-dimmer list** (sorted by `dimmer_id`) |
 | `0x4076` | `u16 LE` | Pointer / offset (value `0x1271` once first dimmer is patched) |
-| `0x61000` | 0x800 × ≥10 | **Personality library** — compiled R20 fixture profiles, 2 KiB per slot. ASCII device name (`PARINER`, `FRESNEL`, …) is at the slot's start. Slots seen: 0=PARINER, 1=PAROUTER, 8=FRESNEL, 9=CENTCM250 |
+| `0x61000` | 0x800 × N | **Personality library** — compiled R20 fixture profiles, 2 KiB per slot. ASCII device name at slot start. See "Personality slot map" below |
 | `0xC4000` | 0x1000 × N | **Scene region** — each recorded scene occupies one 4096-byte slot, appended in record order |
 | `0xC4000 + N*0x1000` | rest | "Library / fixture-profile" region (recognisable by patterns `64 00 60 EA …`, `E0 00 FF 00 …`, `B8 00 11 …`). Pushed forward by 0x1000 each time a scene is recorded |
 
@@ -55,6 +55,30 @@ letter rotates per save). Files are nominally **1,433,088 bytes** plus
   - `index_offset(page, scene_num) = 0x70C00 + (page × 12 + scene_num) × 0x400`
   - Verified: 5/11 → `0x82800`, 5/10 → `0x82400`, 5/9 → `0x82000`, 5/8 → `0x81C00`.
   - Total table size = 120 × 0x400 = `0x1E000` bytes (spans `0x70C00..0x8EC00`).
+
+---
+
+## Personality slot map (verified G.KKD)
+
+R20 fixture personalities are compiled into 2 KiB slots starting at `0x61000`.
+ASCII device name (≤11 chars) sits at the slot's start. **File slot index is
+the canonical `personality_id`** — the console's display order may differ from
+file slot order (it appears to reflect load order).
+
+| File slot | File offset | Device | Console display # |
+|---|---|---|---|
+| 0 | `0x61000` | `PARINER` | 1 |
+| 1 | `0x61800` | `PAROUTER` | 3 |
+| 2 | `0x62000` | `CNTCM72` | 2 |
+| 3 | `0x62800` | `STD` | 4 |
+| 4 | `0x63000` | `N-PAR18-6` | 5 |
+| 5 | `0x63800` | `N-PAR18` | 6 |
+| 6 | `0x64000` | `ADJUK186` | 7 |
+| 7 | `0x64800` | `N-PIN` | 8 |
+| 8 | `0x65000` | `FRESNEL` | 9 |
+| 9 | `0x65800` | `CENTCM250` | 10 |
+
+Open: which byte in `.KKD` stores per-fixture `personality_id` (i.e. fixture 220 → 0=PARINER). Likely a parallel array adjacent to the DMX-address table at `0x1E`.
 
 ---
 
