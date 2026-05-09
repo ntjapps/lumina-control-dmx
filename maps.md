@@ -90,21 +90,32 @@ proven for any other dimmer; need a save that patches a 2nd dimmer.
 > master / grand-master scaling at playback time — it is independent of what
 > level was stored.
 
-### Scene record positions (NOT sequential by scene number)
+### Scene record locator — solved
 
-Scenes are inserted at format-determined offsets, not appended:
+The scene records form a **flat array** at file offset **`0x93000`**, stride
+**`0x1000`** (4096 bytes), indexed by an 8-bit **slot ID** that lives in the
+scene-index entry at `+0x16`.
 
-| Scene | Coords (in source file before insert) | Note |
-|---|---|---|
-| 5/11 | `0xC4000` (in B) | First save with a scene |
-| 5/10 | `0xC5000` (in D) | Adjacent to 5/11, +0x1000 |
-| 5/9  | `0xEB000` (in E) | **+0x26000 jump from 5/10** |
-| 5/8  | `0xEC000` (in F) | Adjacent to 5/9, +0x1000 |
+```
+index_entry  = 0x70C00 + (page * 12 + scene_num) * 0x400
+slot_id      = byte at (index_entry + 0x16)
+scene_record = 0x93000 + slot_id * 0x1000
+```
 
-So scenes seem to cluster: 5/11 + 5/10 share one region, 5/9 + 5/8 share
-another. The mechanism that picks the slot is still unknown — possibly some
-sort of pre-allocated bank per (page, scene-range) tuple. More test recordings
-across different scene numbers / pages would clarify.
+Verified against all four test saves:
+
+| Scene | slot_id at index_entry+0x16 | Computed scene_record | Observed |
+|---|---|---|---|
+| 5/11 | `0x31` (49) | `0x93000 + 49 * 0x1000 = 0xC4000` | `0xC4000` ✓ |
+| 5/10 | `0x32` (50) | `0xC5000` | `0xC5000` ✓ |
+| 5/9  | `0x58` (88) | `0xEB000` | `0xEB000` ✓ |
+| 5/8  | `0x59` (89) | `0xEC000` | `0xEC000` ✓ |
+
+The reason scene 5/9 took slot 88 (not 51) when only two prior scenes existed
+is still unclear — likely B's untouched layout reserves only certain slots as
+"free for scene records" and the firmware allocates in a fixed order from
+that free-list. More test recordings (e.g. patches across different pages)
+would let us derive the slot-allocation order.
 
 ### Per-scene index table at `~0x82000` (stride `0x400`)
 
