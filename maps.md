@@ -23,6 +23,7 @@ letter rotates per save). Files are nominally **1,433,088 bytes** plus
 | `~0x001E` | 80 × `u16 LE` (= 160 B) | **DMX-address table**, indexed by `dimmer_id`. Entry = DMX channel, `0` = unpatched |
 | `~0x0338` | sorted `u16[]` | **Global active-dimmer list** (sorted by `dimmer_id`) |
 | `0x4076` | `u16 LE` | Pointer / offset (value `0x1271` once first dimmer is patched) |
+| `0x61000` | 0x800 × ≥10 | **Personality library** — compiled R20 fixture profiles, 2 KiB per slot. ASCII device name (`PARINER`, `FRESNEL`, …) is at the slot's start. Slots seen: 0=PARINER, 1=PAROUTER, 8=FRESNEL, 9=CENTCM250 |
 | `0xC4000` | 0x1000 × N | **Scene region** — each recorded scene occupies one 4096-byte slot, appended in record order |
 | `0xC4000 + N*0x1000` | rest | "Library / fixture-profile" region (recognisable by patterns `64 00 60 EA …`, `E0 00 FF 00 …`, `B8 00 11 …`). Pushed forward by 0x1000 each time a scene is recorded |
 
