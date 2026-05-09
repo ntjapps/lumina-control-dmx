@@ -129,15 +129,51 @@ which model predicts the second level byte's position correctly.
 > master / grand-master scaling at playback time — it is independent of what
 > level was stored.
 
-### Scene record locator — solved
+### Playback-fader index entry — generalised (scenes & chases)
 
-The scene records form a **flat array** at file offset **`0x93000`**, stride
-**`0x1000`** (4096 bytes), indexed by an 8-bit **slot ID** that lives in the
-scene-index entry at `+0x16`.
+The 1024-byte index entry at `0x70C00 + (page*12 + slot)*0x400` is a
+**playback-fader entry** that supports both single-step (scene) and
+multi-step (chase) recordings. New layout (BC.KKD chase confirms):
+
+```
++0x00  u16 LE   part_count             (1 = scene, ≥2 = chase)
++0x02  u16+u16  timing 1: ?, 0xEA60    (default ~60 s constant)
++0x06  u16+u16  timing 2: ?, 0xEA60
++0x0A  u16+u16  timing 3: ?, 0xEA60
++0x0E..0x17     bookkeeping flags / counters
++0x18  u16 LE × part_count   slot_id array (one per chase step)
+```
+
+Each `slot_id` references a 4 KiB record at `0x93000 + slot_id * 0x1000` —
+the same flat record region used for scenes.
+
+**Earlier rule** (`slot_id = byte at index_entry+0x16`) was a single-part
+special case. The byte that landed at `+0x16` for scenes 5/11, 5/10, 5/9, 5/8
+appears to have been the low byte of the slot-id-array header, not the slot
+id itself. The new model places the slot-id array at `+0x18` for both scenes
+and chases. Re-verifying the early scene saves under this new layout is a
+TODO.
+
+### Chase example — BC.KKD (page 5 / no 7, 2 parts)
+
+Index entry at `0x81800`:
+```
+0x00: 02 00              part_count = 2
+0x02: 64 00 60 EA        timing 1
+0x06: 64 00 60 EA        timing 2
+0x0A: 64 00 60 EA        timing 3
+0x18: 5A 00              part 1 slot_id = 90 → record at 0xED000
+0x1A: 5B 00              part 2 slot_id = 91 → record at 0xEE000
+```
+Recorded levels: part 1 has `0xFF` (255), part 2 has `0x9C` (156) at the
+same level-array position — consistent with each part being a full level
+frame.
+
+### Scene record locator — original single-part rule (to re-verify)
 
 ```
 index_entry  = 0x70C00 + (page * 12 + scene_num) * 0x400
-slot_id      = byte at (index_entry + 0x16)
+slot_id      = byte at (index_entry + 0x16)   ← may actually be +0x18, see above
 scene_record = 0x93000 + slot_id * 0x1000
 ```
 
