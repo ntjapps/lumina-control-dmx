@@ -18,16 +18,25 @@ letter rotates per save). Files are nominally **1,433,088 bytes** plus
 | Offset | Size | What |
 |---|---|---|
 | `0x0000` | 20 bytes | ASCII header ending in `"SHOWDATA"` |
-| `0x0014` | 1 byte | **Slot letter** (`'A'`, `'B'`, `'C'`, …) — matches the file's name on USB |
-| `0x0015..0x001D` | ? | header padding / unknown |
+| `0x0014..0x001D` | 10 bytes | **Slot name** (ASCII, NUL-padded). Console rotates A→B→…→Z→AA→AB→…→AAAAA-AA, etc. Matches USB filename. Verified G=`"G"`, AA=`"AA"`, AAAAA-AA=`"AAAAA-AA"` |
+| `0x009C` | 6 bytes | **Personality counter array.** Decrements on each personality deletion. G=`09 09 09 09 0A 0A` (10 personalities), AA=`08 08 08 08 09 09`, AAAAA-AA=`07 07 07 07 08 08`. Mirrored at `0x60840` |
+| `~0x0110` | bytes | **Personality slot permutation/order array.** On deletion, deleted slot is zeroed and following entries shift. Mirrored at `~0x60800` |
 | `~0x001E` | 80 × `u16 LE` (= 160 B) | **DMX-address table**, indexed by `dimmer_id`. Entry = DMX channel, `0` = unpatched |
+| `~0x0040` | sorted `u16 LE[]` | **Sorted DMX-channel list** (ascending). Lists every patched DMX start address. AC→BA: insert `C3 00` (=195) at position 4. AAAAA-AA→AB: removed `BF..C8` (=191..200) when fixtures 111–120 deleted |
+| `~0x00AC` | bytes | **Per-personality patched-fixture counter** (one byte per personality slot). AC→BA `+1` at offset `0xAC` when PARINER got first patch |
+| `~0x0498` | sorted `u16 LE[]` | **Sorted fixture_id list** (ascending). AB→AC removed `15..1E` (=21..30 = fixtures 101–110); AAAAA-AA→AB removed `1F..28` (=31..40 = fixtures 111–120) |
+| `~0x4028` | `u16 LE[]` | **Per-fixture record-pointer table.** AB→AC removed 10 pointers `0x0641, 0x0691, 0x06E1, … (stride 0x50)`. AC→BA reused `0x0641` for the new PARINER patch. Pointers point into a per-fixture record region with **80-byte stride** |
 | `~0x0338` | sorted `u16[]` | **Global active-dimmer list** (sorted by `dimmer_id`) |
 | `0x4076` | `u16 LE` | Pointer / offset (value `0x1271` once first dimmer is patched) |
+| `0x60878` | 60 × `u16 LE` | **Fixture→DMX patch table** (canonical, AA-era). Indexed by fixture handle (1..60). Verified across AA: PARINER 1–4 = `1,7,13,19`; FRESNEL 5–8 = `30,36,42,48`; CENTCM250 9+ = `54,63,…`; CNTCM72 = `115,129,143`; DIMMER 101–120 = `181..200`. The earlier `0x1E` table appears to be a legacy mirror |
+| `0x61000` | 0x800 × N | **Personality library** — compiled R20 fixture profiles, 2 KiB per slot. ASCII device name at slot start. **Deletion does NOT clear the slot's name** — bookkeeping lives in counters/permutation arrays elsewhere. See "Personality slot map" below |
+| `file_size − 0x800` (e.g. `0x161000`) | 0x800 | **Trailer / "next save" header.** Magic `"KINGKONG1024SHOWDATA"` followed by next slot name + a partial copy of the patch table. Empty when no further save is queued |
 | `0xC4000` | 0x1000 × N | **Scene region** — each recorded scene occupies one 4096-byte slot, appended in record order |
 | `0xC4000 + N*0x1000` | rest | "Library / fixture-profile" region (recognisable by patterns `64 00 60 EA …`, `E0 00 FF 00 …`, `B8 00 11 …`). Pushed forward by 0x1000 each time a scene is recorded |
 
 ### Mini Pearl 512A spec (per user)
 
+- **One DMX universe — 512 DMX channels** (the "512" in the name).
 - **3 fixture pages × 20 fixtures = 60 fixture handles.** Display numbers are
   `1–20`, `101–120`, `201–220` (gaps between banks).
 - **10 playback pages × 12 faders per page = 120 scene slots.** Pages and
@@ -56,6 +65,30 @@ letter rotates per save). Files are nominally **1,433,088 bytes** plus
 
 ---
 
+## Personality slot map (verified G.KKD)
+
+R20 fixture personalities are compiled into 2 KiB slots starting at `0x61000`.
+ASCII device name (≤11 chars) sits at the slot's start. **File slot index is
+the canonical `personality_id`** — the console's display order may differ from
+file slot order (it appears to reflect load order).
+
+| File slot | File offset | Device | Console display # |
+|---|---|---|---|
+| 0 | `0x61000` | `PARINER` | 1 |
+| 1 | `0x61800` | `PAROUTER` | 3 |
+| 2 | `0x62000` | `CNTCM72` | 2 |
+| 3 | `0x62800` | `STD` | 4 |
+| 4 | `0x63000` | `N-PAR18-6` | 5 |
+| 5 | `0x63800` | `N-PAR18` | 6 |
+| 6 | `0x64000` | `ADJUK186` | 7 |
+| 7 | `0x64800` | `N-PIN` | 8 |
+| 8 | `0x65000` | `FRESNEL` | 9 |
+| 9 | `0x65800` | `CENTCM250` | 10 |
+
+Open: which byte in `.KKD` stores per-fixture `personality_id` (i.e. fixture 220 → 0=PARINER). Likely a parallel array adjacent to the DMX-address table at `0x1E`.
+
+---
+
 ## Scene record (4096 bytes per scene)
 
 Each recorded scene occupies one **4096-byte (`0x1000`) record**, inserted into
@@ -69,7 +102,7 @@ Confirmed in-scene offsets (offsets relative to `scene_base`):
 | `+0x000` | `00 00 60 EA 00 00 60 EA 00 00 60 EA 00` | Scene header — three `(u16 ?, u16 0xEA60)` pairs + 1 byte. `0xEA60 = 60000` is a constant (probably default fade/wait time, ~60s) |
 | `+0x1B3` | `0x07` (when scene has ≥1 dimmer) | Flag — possibly "scene populated" |
 | `+0x1EF` | `0x01` (when scene has ≥1 dimmer) | Flag/count — likely "active dimmer count" |
-| **`+0x3EF`** | **1 byte = literal DMX level (0–255)** for `dimmer_id = 60` | **Dimmer level** — verified across 3 scenes with 3 different stored levels (see below) |
+| **`+0x3EF`** | **1 byte = literal DMX level (0–255)** for the channel patched to fixture 220 (DMX channel **5**) | **Level** — verified across 3 scenes with 3 different stored levels (see below). Almost certainly part of a **512-byte level array indexed by DMX channel**, with `level_base ≈ +0x3EA` so `+0x3EA + 5 = +0x3EF` (Mini Pearl 512A is single-universe / 512 channels — storing the array DMX-channel-indexed lets the console ship it straight to the wire on playback) |
 
 ### Level field — verified
 
@@ -80,11 +113,17 @@ Confirmed in-scene offsets (offsets relative to `scene_base`):
 | F | 5/9  | 255 | `0xEB000` | `0xFF` |
 | G | 5/8  | 50  | `0xEC000` | `0x32` |
 
-So **`level_byte = scene_base + 0x3EF + (dimmer_id − 60)`** if stride is 1 byte
-per dimmer (likely — a single byte can hold the full DMX 0–255 range; the
-diff-window of 58 bytes around the level fits an 80-dimmer × 1-byte array). The
-exact base of the level array (`scene_base + ~0x3B3` if stride 1) is not yet
-proven for any other dimmer; need a save that patches a 2nd dimmer.
+**Leading hypothesis (DMX-channel-indexed):**
+`level_byte = scene_base + 0x3EA + (dmx_channel)` (1-indexed channels, 512
+total → 512-byte array spanning `+0x3EA..+0x5EA`). With our test fixture at
+DMX 5 this gives `+0x3EA + 5 = +0x3EF` ✓.
+
+**Alternative (fixture-id-indexed):** `level_byte = scene_base + 0x3B3 + fixture_id`.
+Also fits the data we have so far because we only ever patched fixture_id 60.
+
+To disambiguate in one save: patch a second fixture at a clearly different
+DMX address (e.g. DMX 100), record a scene with both at known levels, and see
+which model predicts the second level byte's position correctly.
 
 > Stored values are raw DMX bytes (0–255). On the console "100% playback" is a
 > master / grand-master scaling at playback time — it is independent of what
