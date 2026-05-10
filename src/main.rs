@@ -7,6 +7,7 @@ mod diff;
 mod dump;
 mod find;
 mod inspect;
+mod peek;
 
 fn usage() -> ExitCode {
     eprintln!(
@@ -15,7 +16,8 @@ fn usage() -> ExitCode {
            lumina_control_dmx dump  <drive-letter> <output.img>\n  \
            lumina_control_dmx carve   <image>  [filename]  [output]\n  \
            lumina_control_dmx diff    <a.kkd>  <b.kkd>\n  \
-           lumina_control_dmx inspect <kkd> [kkd ...]\n\n\
+           lumina_control_dmx inspect <kkd> [kkd ...]\n  \
+           lumina_control_dmx peek    <file> <offset_hex> <len_dec>\n\n\
          EXAMPLES:\n  \
            lumina_control_dmx dump    E dump.img\n  \
            lumina_control_dmx carve   dumps/dump.imp A.KKD dumps/A.KKD\n  \
@@ -99,6 +101,33 @@ fn main() -> ExitCode {
                 }
                 Err(e) => {
                     eprintln!("carve failed: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        "peek" => {
+            if args.len() != 5 {
+                return usage();
+            }
+            let file = PathBuf::from(&args[2]);
+            let offset = match u64::from_str_radix(args[3].trim_start_matches("0x"), 16) {
+                Ok(o) => o,
+                Err(e) => {
+                    eprintln!("invalid hex offset: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let len: usize = match args[4].parse() {
+                Ok(n) => n,
+                Err(e) => {
+                    eprintln!("invalid length: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            match peek::peek(&file, offset, len) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("peek failed: {e}");
                     ExitCode::FAILURE
                 }
             }

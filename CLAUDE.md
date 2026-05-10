@@ -41,6 +41,7 @@ This repo's RE workflow is built on a small set of **Rust subcommands in `src/`*
 | `diff <a.kkd> <b.kkd>` | `src/diff.rs` | Byte-diff two carved files. Prints contiguous differing runs (gap-merged ≤ 8 B) with hex+ASCII context. Tolerates size mismatches |
 | `find <file> "<hex bytes>"` | `src/find.rs` | Scan a file for a hex byte pattern. Useful to locate a known value (e.g. a DMX address, a level byte) anywhere in the file |
 | `inspect <kkd> [kkd ...]` | `src/inspect.rs` | Side-by-side dump of all known offsets across multiple files. Add new field probes here as the map grows — this replaces ad-hoc scripts |
+| `peek <file> <offset_hex> <len_dec>` | `src/peek.rs` | Read `len` bytes at a hex offset and print them as hex+ASCII. Use to walk a single index entry / record / structure when you don't need cross-file comparison. Reusable; do not reimplement |
 
 ### Standard mapping loop
 

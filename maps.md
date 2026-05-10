@@ -137,14 +137,17 @@ The 1024-byte index entry at `0x70C00 + (page*12 + slot)*0x400` is a
 multi-step (chase) recordings. Layout verified across D/E/F/G/BC:
 
 ```
-+0x00  u16 LE          part_count                 (1 = scene, ≥2 = chase)
++0x00  u16 LE          fader_type                 (0 = empty, 1 = scene, 2 = chase)
 +0x02  u16 + u16 LE    timing 1: <val>, 0xEA60    (0xEA60 = 60000 const)
 +0x06  u16 + u16 LE    timing 2: <val>, 0xEA60
 +0x0A  u16 + u16 LE    timing 3: <val>, 0xEA60
-+0x0E..0x15            bookkeeping (zeros in all observed)
-+0x16  u16 LE          part_count (duplicate / mirror of +0x00)
++0x0E  u16 LE          flag (0 for scene; 1 when fader is a chase)
++0x10..0x15            bookkeeping (zeros in all observed)
++0x16  u16 LE          part_count                 (1 for scene, N for chase)
 +0x18  u16 LE × N      slot_id array (one per chase step / scene)
 ```
+
+**Correction (2026-05-10):** earlier I claimed `+0x00` was `part_count` and `+0x16` was its mirror. They happen to coincide for scenes (both `1`) and small chases (both `2` for BC's 2-part chase). The 125-cue chase in PB3 disambiguates them: `+0x00 = 2` (still "chase" type), `+0x16 = 0x7D = 125` (actual part count). So `+0x00` is the **fader_type** discriminator (1=scene, 2=chase) and `+0x16` is the **real part_count**. Verified across PB1 (scenes: type=1, count=1), PB2 (1-cue chases: type=2, count=1), PB3 (125-cue chase: type=2, count=125), BC (2-cue chase: type=2, count=2), D-G (scenes: type=1, count=1).
 
 Each `slot_id` references a 4 KiB record at `0x93000 + slot_id * 0x1000` —
 the same flat record region used for scenes.
@@ -249,6 +252,33 @@ Two data points so far:
 
 So palette flags are NOT a simple `base + fixture_id*stride` array. Likely the byte sits at a fixture-specific offset inside a per-fixture record (the `0x4400..0x60100` striped region), at a relative position that depends on fixture personality or order. **Need a third palette save (e.g. on `fixture_id 30`) before claiming a formula.** Also unclear: whether the actual palette levels are stored elsewhere (and we're only seeing the "palette saved" flag), or whether the palette is only meaningful when attached to a playback (in which case full palette data would live in the slot-record region — currently truncated in WP5-derived saves).
 
+### Playback test series (DM4 → PB1 → PB2 → PB3)
+
+Drives the post-patch state by recording scenes, then converting to chases, then a giant chase. Same dump as DM4.
+
+| Pair | Console action | Δ size | Runs | Bytes | Highlights |
+|---|---|---|---|---|---|
+| DM4→PB1 | record scenes on Playbacks 1 + 12 of every page (20 total) | +0x14000 | n/a | size diff | 20 new index entries populated with `+0x00 = 1` (scene), `+0x16 = 1` (part_count); 20 new 4 KiB records appended at `0x93000 + slot_id*0x1000` for slot_ids 0..19 |
+| PB1→PB2 | convert each scene to a chase | 0 | 42 | 562 | Per converted entry: `+0x00 1 → 2` (scene→chase type), default timings 0 → 100, `+0x0E 0 → 1` (chase flag). `+0x16` part_count stays 1 (1 cue per chase). The slot record at `0x93000 + slot_id*0x1000` is **reused** — no new allocation |
+| PB2→PB3 | record one big chase with >125 cues on slot_num 2 of page 0 | +0x7D000 | 4 | 431 (in common prefix) | New index entry at `0x71400`: `+0x00 = 2`, `+0x16 = 125`, slot_ids `0x14..0x90` (=20..144) — 125 contiguous slots. Console capped recording at 125 (user attempted more) |
+
+### Max cues per chase — verified 125 (firmware-imposed)
+
+PB3 demonstrates the firmware's hard limit on cues per chase: the user attempted to record more than 125 cues, and the console saved exactly 125. Structurally, the 1024-byte index entry has room for `(0x400 − 0x18) / 2 = 500` `u16` slot_id slots, so 125 is **far below the structural ceiling**. The cap is in console firmware logic, not the file format.
+
+For round-trip writers: there is no need to enforce the 125 cap when generating files — the format itself accepts up to 500 cues per chase. But the console may refuse or truncate when reading a chase with >125 parts. Test before relying on it.
+
+### Slot allocator — contiguous, monotonic
+
+Combining the WP-derived chain (BKP → … → PB3) shows the allocator picks slot_ids in **strict ascending order** with no reuse:
+
+- PB1 (20 scenes recorded sequentially) → slot_ids 0..19
+- PB3 (one 125-cue chase) → slot_ids 20..144 (continuing from where PB1 left off)
+
+Conversion of a scene to a chase **does not** allocate a new slot (PB1→PB2 size unchanged) — the same `slot_id` is reused, only the index entry's metadata changes. Allocation happens only when **new** records are needed.
+
+This contradicts the earlier maps.md note "the reason F (scene 5/9) jumped to slot 88 instead of 51 is still unclear — likely B's pre-existing layout reserves only certain slots as free for record allocation." The PB-series data shows allocation is straightforwardly monotonic; the F-jump must instead be explained by the prior file (B-era) already having higher slots populated by template/firmware-default state, leaving slots above some watermark as the "next free" — not a reservation scheme.
+
 ### Failed group save — verified no-op
 
 DM4 attempted to save a fixture group but the console reported failure. Diff DM3→DM4 contains zero bytes attributable to a group structure. Confirms **failed console operations write nothing to the file** — no half-applied state to clean up.
@@ -319,6 +349,9 @@ Saves done so far. Each one is a single controlled state on the console.
 | `DM2.KKD` | 605,696 | DM1 → keep only fixture 1 (DMX 1) and fixture 2 (DMX **512**); unpatched the other 58. `0x1E`: fixture_id 1 → `01 00`, fixture_id 2 → `00 02` (= `0x0200` = 512). Confirms DMX address is stored as `u16 LE` and supports the full 1..512 range. **`0x4028` record-pointer table reverts to all-zero** when patch density falls below the 60-fixture full-load — meaning that table is only populated when the full set of records is allocated, not per-patch |
 | `DM3.KKD` | 605,696 | DM2 + **save palette to fixture 1**. Diff vs DM2 = **3 bytes / 3 runs**: name byte + trailer name byte + **`0x6C00`: `00 → 01`** (palette presence flag for fixture 1). The actual palette levels are NOT visible in this diff — possibly stored in the slot-record region which has been wiped, or palette save without an associated playback only sets the flag |
 | `DM4.KKD` | 605,696 | DM3 + **save palette to fixture 220** (= `fixture_id 60`); also attempted to save a fixture group, **operation failed on the console**. Diff vs DM3 = 40 B / 5 runs: name byte + **`0x5F400`: `00 → 01`** (palette flag for `fixture_id` 60) + clearing of trailer block 1 (no next save queued at DM4 time). **No bytes attributable to the group save** — confirms "operation failed → nothing written" |
+| `PB1.KKD` | 687,616 (+0x14000 = +20 records) | DM4 + **record a scene on Playbacks 1 and 12 of every page** (10 pages × 2 = 20 scenes). File grows by exactly `20 × 0x1000`. Slot allocation is contiguous from slot 0 — slot_ids 0..19 used in record order |
+| `PB2.KKD` | 687,616 (same size) | PB1 → **convert each of those scenes to a chase** with one cue. File size unchanged because each chase keeps reusing its single existing slot record. Diff vs PB1 = 562 B / 42 runs: per index entry, `+0x00: 01 → 02` (fader_type scene→chase), default timings populate (0 → 100), `+0x0E` flag goes 0 → 1; `+0x16` part_count stays 1 |
+| `PB3.KKD` | 1,199,616 (+0x7D000 = +125 records) | PB2 + **record a chase with >125 cues on one fader** (page 0, slot_num 2). Console capped recording at **125 cues** — file grows by exactly `125 × 0x1000`. Index entry at `0x71400` shows `+0x00 = 2` (chase), `+0x16 = 0x7D = 125` (part_count), slot_id array `+0x18..+0x111` filled with consecutive slot_ids `0x14..0x90` (=20..144). **Confirms the firmware allocator is contiguous** (slots 0..19 from PB1, slots 20..144 from PB3) and **decouples `+0x00 fader_type` from `+0x16 part_count`** — two separate fields, not a mirror pair |
 
 ---
 
@@ -425,6 +458,7 @@ instead of `0x3C` and DMX `5` written at `0x94` instead of `0x96`.)
   `cargo run -- carve dumps/dump.imp <NAME>.KKD dumps/<NAME>.KKD`.
 - Diffs: `cargo run -- diff dumps/X.KKD dumps/Y.KKD`.
 - Cross-file field inspection: `cargo run -- inspect dumps/A.KKD dumps/B.KKD …` — prints decoded values at all known offsets side-by-side. Use this whenever you'd otherwise reach for an ad-hoc script; extend `src/inspect.rs` to add new field probes.
+- Hex peek at an arbitrary offset: `cargo run -- peek dumps/PB3.KKD 0x71400 280` — reads `len` bytes starting at `offset_hex` and prints them as hex+ASCII. Useful to walk a single index entry or record without writing throwaway code.
 
 ---
 
