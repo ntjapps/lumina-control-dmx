@@ -19,7 +19,7 @@ letter rotates per save). Files are nominally **1,433,088 bytes** plus
 |---|---|---|
 | `0x0000` | 20 bytes | ASCII header ending in `"SHOWDATA"` |
 | `0x0014..0x001D` | 10 bytes | **Slot name** (ASCII, NUL-padded). Console rotates A→B→…→Z→AA→AB→…→AAAAA-AA, etc. Matches USB filename. Verified G=`"G"`, AA=`"AA"`, AAAAA-AA=`"AAAAA-AA"` |
-| `0x009C` | 6 bytes | **Personality counter array.** Decrements on each personality deletion. G=`09 09 09 09 0A 0A` (10 personalities), AA=`08 08 08 08 09 09`, AAAAA-AA=`07 07 07 07 08 08`. Mirrored at `0x60840` |
+| `0x009C` | 6 bytes | **Personality counter array (live).** Decrements on each personality deletion. G=`09 09 09 09 0A 0A` (10 personalities), AA=`08 08 08 08 09 09`, AAAAA-AA=`07 07 07 07 08 08`. **Cleared (zeroed) by wipe-all** (WP4). A second copy lives at `0x60840` in BKP/WP/AA-BC saves and survives wipe-all — but in A-G saves the bytes at `0x60840` are unrelated content (`61 29 0D 0A 2D 2D` ≈ `"a)..--"`), so the mirror is not a stable cross-era invariant. See "Two-copy patch/personality model" below |
 | `~0x0110` | bytes | **Personality slot permutation/order array.** On deletion, deleted slot is zeroed and following entries shift. Mirrored at `~0x60800` |
 | `~0x001E` | 80 × `u16 LE` (= 160 B) | **DMX-address table**, indexed by `dimmer_id`. Entry = DMX channel, `0` = unpatched |
 | `~0x0040` | sorted `u16 LE[]` | **Sorted DMX-channel list** (ascending). Lists every patched DMX start address. AC→BA: insert `C3 00` (=195) at position 4. AAAAA-AA→AB: removed `BF..C8` (=191..200) when fixtures 111–120 deleted |
@@ -28,9 +28,10 @@ letter rotates per save). Files are nominally **1,433,088 bytes** plus
 | `~0x4028` | `u16 LE[]` | **Per-fixture record-pointer table.** AB→AC removed 10 pointers `0x0641, 0x0691, 0x06E1, … (stride 0x50)`. AC→BA reused `0x0641` for the new PARINER patch. Pointers point into a per-fixture record region with **80-byte stride** |
 | `~0x0338` | sorted `u16[]` | **Global active-dimmer list** (sorted by `dimmer_id`) |
 | `0x4076` | `u16 LE` | Pointer / offset (value `0x1271` once first dimmer is patched) |
-| `0x60878` | 60 × `u16 LE` | **Fixture→DMX patch table** (canonical, AA-era). Indexed by fixture handle (1..60). Verified across AA: PARINER 1–4 = `1,7,13,19`; FRESNEL 5–8 = `30,36,42,48`; CENTCM250 9+ = `54,63,…`; CNTCM72 = `115,129,143`; DIMMER 101–120 = `181..200`. The earlier `0x1E` table appears to be a legacy mirror |
+| `0x60878` | 60 × `u16 LE` | **Fixture→DMX patch table — persistent / "applied-config" copy.** Indexed by fixture handle (1..60). Verified across AA: PARINER 1–4 = `1,7,13,19`; FRESNEL 5–8 = `30,36,42,48`; CENTCM250 9+ = `54,63,…`; CNTCM72 = `115,129,143`; DIMMER 101–120 = `181..200`. **Survives wipe-all** (WP4 keeps it byte-identical). **Empty (all-zero) in the A-G era** — only populated from AA onward. The matching live-patch data lives at `0x1E + fixture_id*2` (the pre-AA "DMX-address table") and IS cleared by wipe-all. So `0x1E` and `0x60878` are **two copies with different lifetimes**, not a "canonical vs legacy mirror" relationship — see "Two-copy patch/personality model" below |
 | `0x61000` | 0x800 × N | **Personality library** — compiled R20 fixture profiles, 2 KiB per slot. ASCII device name at slot start. **Deletion does NOT clear the slot's name** — bookkeeping lives in counters/permutation arrays elsewhere. See "Personality slot map" below |
-| `file_size − 0x800` (e.g. `0x161000`) | 0x800 | **Trailer / "next save" header.** Magic `"KINGKONG1024SHOWDATA"` followed by next slot name + a partial copy of the patch table. Empty when no further save is queued |
+| `file_size − 0xE00` (= `record_region_end`) | 0x600 | **Trailer block 1 — patch/group/fixture mirror.** Begins with magic `"KINGKONG1024SHOWDATA"` + slot name (offset within block: `+0x0E..+0x1E` ≈ name) — exact mirror of the file-head magic and name. Followed by copies of: DMX-address table head (matching `0x1E`), small `u16` lists at +0x40 / +0x60, per-personality patched-fixture counters at +0x98, fixture/personality bitmap arrays at +0x16C..+0x1D0, and group definitions (4-fixture groupings + group ID) at +0x330..+0x46F. **Cleared progressively by the wipe stages** — fixtures+groups wipe (WP2→WP3) zeroes essentially this whole block. (Verified inside WP files at file offset `0x93000..0x93600`.) |
+| `file_size − 0x800` (e.g. `0x161000`) | 0x800 | **Trailer block 2 — "queued next save" header.** Magic `"KINGKONG1024SHOWDATA"` followed by next slot name + a partial copy of the patch table. **All-zero when no further save is queued** (verified across A-G, AA-BC, BKP, WP1-4 — none had a queued next save) |
 | `0xC4000` | 0x1000 × N | **Scene region** — each recorded scene occupies one 4096-byte slot, appended in record order |
 | `0xC4000 + N*0x1000` | rest | "Library / fixture-profile" region (recognisable by patterns `64 00 60 EA …`, `E0 00 FF 00 …`, `B8 00 11 …`). Pushed forward by 0x1000 each time a scene is recorded |
 
@@ -201,6 +202,36 @@ likely B's pre-existing layout reserves only certain slots as free for
 record allocation, and the firmware allocates in a fixed order from that
 free-list.
 
+### Wipe-test diff series (BKP → WP1 → WP2 → WP3 → WP4 → WP5)
+
+Carved from `dumps/dump.imp` (second USB dump, wipe-test session). Each save was taken immediately after a single wipe operation on the console:
+
+| Pair | Wipe action | Δ size | Runs | Bytes differ | Where the diff lives |
+|---|---|---|---|---|---|
+| BKP→WP1 | wipe playbacks | −0xD0000 | 233 | 4304 (in common prefix) + 852 KB tail dropped | playback-fader index entries (`0x70C00..0x8EC00`) clear their slot-id arrays; whole slot-record region (`0x93000..file_end`) gone |
+| WP1→WP2 | wipe palettes | 0 | 2 | **2** (1 = show-name char) | BKP had no palettes — wipe was a no-op. Palette storage location remains undetermined; need a fresh capture with palettes deliberately populated |
+| WP2→WP3 | wipe fixtures + groups | 0 | 11 | 364 | **All in trailer block 1 at `0x93000..0x934BF`** — the head-of-file live tables are NOT touched by this stage. Trailer block 1 holds: copy of magic+name, copy of DMX-address table at +0x20 (`01 00 07 00 0D 00 13 00 …`), `u16` lists at +0x40 / +0x60, per-personality patched-fixture counters at +0x98 (`01 01 01 01 07 07 07 07 08 08 04 00 …`), fixture/personality bitmap arrays at +0x16C..+0x1D0 (`01 00 00 00 01 00 …`), group definitions at +0x330..+0x46F (`3E 00 3F 00 40 00 01 00 00 00 3D 00 42 00 …` — 4 fixture handles + group_id pattern), and a fixture-handle list at +0x4B4 (`9D 9E 9F 15 00 9C`) |
+| WP3→WP4 | wipe all | 0 | 520 | 5683 | Clears head-of-file live tables: `0x1E` (DMX-address table → all zero), `0x4028` (record-pointer table → all zero except first entry `41 06`), `0x498` (sorted fixture-id list → all zero), `0x9C` (personality counter → `00 00 00 00 00 00`). **Preserves**: `0x60840` mirror, `0x60878` patch-table copy, personality library (`0x61000`+) — confirmed on the console UI |
+| WP4→WP5 | wipe personality data | 0 | 230 | 6700 | Clears **exactly** the three fields wipe-all spared: `0x60840` mirror → zero, `0x60878` patch table → zero, personality library (`0x61000`+) → zero. The personality library is its own console-managed datum, separate from the "show" — and "wipe personality data" is the dedicated console command that erases it (the bigger destructive action; not part of "wipe all") |
+
+### Two-copy patch/personality model — verified
+
+The wipe-test data shows the file maintains **two copies** of patch/personality bookkeeping with **different lifetimes**:
+
+| Datum | Live copy | Persistent copy (personality-library group) | Cleared by wipe-all (WP4)? | Cleared by wipe personality data (WP5)? |
+|---|---|---|---|---|
+| Personality counter | `0x009C` (6 B) | `0x60840` (6 B) | live ✓ / persistent ✗ | live n/a / persistent ✓ |
+| Fixture→DMX patch table | `0x001E` (`+fixture_id*2`) | `0x60878` (60 × `u16`) | live ✓ / persistent ✗ | live n/a / persistent ✓ |
+| Personality library | n/a (no live copy) | `0x61000` (10 × `0x800`) | ✗ (preserved — UI-confirmed) | ✓ (zeroed) |
+
+The persistent copies form a single **personality-library bundle**: `0x60840` + `0x60878` + `0x61000+` are written, mirrored, and erased together. They survive "wipe all" (which only wipes show data) and are erased by "wipe personality data" — verified end-to-end via WP4→WP5.
+
+**Implication for write-back:** A correct round-trip must update **both** the live copies AND the persistent copies in lockstep when the personality library or its fixture mappings change. The persistent bundle acts as a "loaded personality library + how it's wired" snapshot the firmware re-applies on boot; the live copies reflect runtime show state that wipe-all resets.
+
+**Cross-era caveat:** In **A-G**-era saves the offset `0x60840` does NOT contain a personality-counter mirror — it contains unrelated bytes (`61 29 0D 0A 2D 2D` ≈ `"a)..--"`). Either (a) some structure ahead of `0x60840` is differently sized between eras, shifting the mirror's location, or (b) the persistent copy at `0x60840` is only emitted by firmware/console states that have a real "applied config" to snapshot. Don't trust `0x60840` as a fixed mirror until tested cross-era.
+
+Similarly `0x60878` is **all-zero in the A-G era** but populated from AA onward. The presence of the persistent copy correlates with the AA-era state where multiple fixture types are properly patched.
+
 ### Earlier wrong hypotheses (retracted)
 
 - The periodic `0x3C` insertions at `0x1270`, `0x5670`, `0x7E70`, etc. seen in
@@ -208,6 +239,14 @@ free-list.
   header/library structures already present in A.KKD.
 - Scenes are **not** appended in record order — they go to scene-specific
   slots.
+- `0x60878` is **not** the canonical patch table while `0x1E` is a "legacy
+  mirror." The wipe-test data shows the opposite lifetime: `0x1E` is the
+  **live** copy (cleared by wipe-all), `0x60878` is the **persistent /
+  applied-config** copy (survives wipe-all). Both are real, just played
+  different roles.
+- The trailer is **not** a single `0x800` block at `file_size − 0x800`. It is
+  a **two-block** structure: `0x600` patch/group mirror + `0x800` queued-next-save
+  header, totalling `0xE00` bytes at the file's tail.
 
 ---
 
@@ -224,6 +263,12 @@ Saves done so far. Each one is a single controlled state on the console.
 | `E.KKD` | 1,441,280 (+0x1000) | D + recorded scene **page 5 / no 10**, dimmer at level **100** |
 | `F.KKD` | 1,445,376 (+0x1000) | E + recorded scene **page 5 / no 9**, dimmer at level **255** |
 | `G.KKD` | 1,449,472 (+0x1000) | F + recorded scene **page 5 / no 8**, dimmer at level **50** |
+| `BKP.KKD` | 1,457,664 | Backup of a real, in-use show (10 personalities, multi-fixture patch, multiple recorded playbacks). Carved from the second dump (`dumps/dump.imp`, the wipe-test session) |
+| `WP1.KKD` | 605,696 | BKP after **wipe playbacks** on the console. File shrinks by `0xD0000` — the entire slot-record region (`0x93000..file_end`) is dropped, leaving only `0x93000 + 0x600` head + `0x800` queued-save trailer |
+| `WP2.KKD` | 605,696 | WP1 after **wipe palettes**. Diff vs WP1 = **2 bytes** (1 = show-name char, 1 = a flag/counter). Indicates BKP had no palettes populated — wipe was effectively a no-op |
+| `WP3.KKD` | 605,696 | WP2 after **wipe fixtures and groups**. Diff vs WP2 = 364 B / 11 runs, **all clustered in `0x93000..0x934BF`** (trailer block 1). The head-of-file live tables at `0x1E` / `0x4028` / `0x498` / `0x60878` are NOT touched by this stage — fixtures+groups erases the trailer mirror only |
+| `WP4.KKD` | 605,696 | WP3 after **wipe all**. Diff vs WP3 = 5683 B / 520 runs. Clears the head-of-file live tables: `0x1E` DMX-address table, `0x4028` per-fixture record-pointer table, `0x498` sorted fixture-id list, `0x9C` personality counter. **Preserves**: personality library at `0x61000` (`PARINER` etc.), the `0x60878` patch-table copy, and the `0x60840` personality counter mirror. **Console-UI confirmed: personality library is retained across "wipe all"** |
+| `WP5.KKD` | 605,696 | WP4 after **wipe personality data** (separate console command from "wipe all"). Diff vs WP4 = 6700 B / 230 runs. Clears **exactly** the three fields wipe-all spared: `0x60840` mirror → zero, `0x60878` persistent patch table → zero, `0x61000+` personality library → zero (`PARINER` name gone). Confirms the two-copy model end-to-end: the persistent copies belong to the personality library, not the show |
 
 ---
 
@@ -325,10 +370,11 @@ instead of `0x3C` and DMX `5` written at `0x94` instead of `0x96`.)
 
 ## Conventions used in this repo
 
-- USB raw image: `dumps/dump.imp` (gitignored). Produced by `cargo run -- dump <drive> dumps/dump.imp` on Windows in an Administrator shell.
-- Carved files: `dumps/{A,B,C,D,E}.KKD` (gitignored). Produced by
+- USB raw image: `dumps/dump.imp` (gitignored). Produced by `cargo run -- dump <drive> dumps/dump.imp` on Windows in an Administrator shell. Two dumps so far: the original (carving A-G, AA, AAAAA-AA, AB, AC, BA, BC) and the wipe-test session (carving BKP, WP1-WP4 — see "Wipe-test diff series").
+- Carved files: `dumps/*.KKD` (gitignored). Produced by
   `cargo run -- carve dumps/dump.imp <NAME>.KKD dumps/<NAME>.KKD`.
 - Diffs: `cargo run -- diff dumps/X.KKD dumps/Y.KKD`.
+- Cross-file field inspection: `cargo run -- inspect dumps/A.KKD dumps/B.KKD …` — prints decoded values at all known offsets side-by-side. Use this whenever you'd otherwise reach for an ad-hoc script; extend `src/inspect.rs` to add new field probes.
 
 ---
 
@@ -370,7 +416,8 @@ saved file we have, no decoded purpose.
 | `0x070C00..0x08EC00` | 120 KB | **Decoded** | **Playback-fader index table.** 120 × `0x400` entries indexed by `page*12 + fader`. Per-entry layout decoded for `+0x00 part_count`, 3 timing pairs, slot-id array at `+0x18`. Bytes `+0x1B..+0x3FF` of each entry are **mostly zero/template, not decoded** — could hold per-fader name, attribute filter, follow links |
 | `0x08EC00..0x093000` | ~17 KB | **Unknown — large** | Between index table end and record region start. Populated even at baseline. Possibly: palette pages, group definitions, fixture-aliases, menu state. **Untouched by saves**, dead-zone for diff-driven discovery |
 | `0x093000..0x15C500` | ~870 KB | **Partial** | **Slot record region.** 128 slots × `0x1000` bytes. Each slot is **pre-populated with template data even when "unused"** (~1280 non-zero bytes at the start of every slot in A baseline). Decoded inside a recorded scene/chase: header at `+0x000`, flags at `+0x1B3` and `+0x1EF`, level byte at `+0x3EF` (DMX-channel-indexed level array hypothesis: `+0x3EA + dmx_channel`). **Everything else inside a 4 KiB record (≈ 4080 of 4096 bytes) is undecoded.** Includes: scene name, fade in/out, snap channels, HTP/LTP overrides, attribute filter, scene chase parameters per part, link to next, etc. |
-| `0x15C500..` to file end | ~6 KB | **Partial** | Trailer area. In files with a queued next save, includes `KINGKONG1024SHOWDATA<next_slot_name>` magic + partial patch-table copy in the **last `0x800` of the file** (file_size − 0x800). Surrounding bytes of trailer not decoded. Exact start and total size of trailer unverified |
+| `file_end − 0xE00` ..  `file_end − 0x800` | 0x600 | **Partial — trailer block 1** | Patch/group/fixture mirror. Begins with `KINGKONG1024SHOWDATA<slot_name>` magic at offset `+0x00` (mirror of file-head magic+name). Followed by copies of: DMX-address table head (`+0x20`), `u16` lists (`+0x40`, `+0x60`), per-personality patched-fixture counters (`+0x98`), fixture/personality bitmap arrays (`+0x16C..+0x1D0`), group definitions (`+0x330..+0x46F`, 4-handle groupings + group_id), fixture-handle list (`+0x4B4`). Cleared progressively by wipe-fixtures+groups (verified WP2→WP3) |
+| `file_end − 0x800` .. `file_end` | 0x800 | **Partial — trailer block 2** | "Queued next save" header. Magic `KINGKONG1024SHOWDATA<next_slot_name>` + partial copy of the patch table — **only present when a save is queued**; all-zero otherwise (verified across every save we have: A-G, AA-BC, BKP, WP1-4 — none had a queued next save) |
 
 ### Roll-up
 

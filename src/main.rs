@@ -6,18 +6,21 @@ mod carve;
 mod diff;
 mod dump;
 mod find;
+mod inspect;
 
 fn usage() -> ExitCode {
     eprintln!(
         "lumina_control_dmx — Mini Pearl 512A toolkit\n\n\
          USAGE:\n  \
            lumina_control_dmx dump  <drive-letter> <output.img>\n  \
-           lumina_control_dmx carve <image>  [filename]  [output]\n  \
-           lumina_control_dmx diff  <a.kkd>  <b.kkd>\n\n\
+           lumina_control_dmx carve   <image>  [filename]  [output]\n  \
+           lumina_control_dmx diff    <a.kkd>  <b.kkd>\n  \
+           lumina_control_dmx inspect <kkd> [kkd ...]\n\n\
          EXAMPLES:\n  \
-           lumina_control_dmx dump  E dump.img\n  \
-           lumina_control_dmx carve dumps/dump.imp A.KKD dumps/A.KKD\n  \
-           lumina_control_dmx diff  dumps/A.KKD dumps/B.KKD\n\n\
+           lumina_control_dmx dump    E dump.img\n  \
+           lumina_control_dmx carve   dumps/dump.imp A.KKD dumps/A.KKD\n  \
+           lumina_control_dmx diff    dumps/A.KKD dumps/B.KKD\n  \
+           lumina_control_dmx inspect dumps/BKP.KKD dumps/WP1.KKD dumps/WP2.KKD\n\n\
          NOTES:\n  \
            * `dump` raw-reads \\\\.\\X: on Windows. Run the terminal as Administrator.\n  \
            * `carve` parses FAT, locates the file's directory entry, and reads\n    \
@@ -96,6 +99,19 @@ fn main() -> ExitCode {
                 }
                 Err(e) => {
                     eprintln!("carve failed: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        "inspect" => {
+            if args.len() < 3 {
+                return usage();
+            }
+            let files: Vec<PathBuf> = args[2..].iter().map(PathBuf::from).collect();
+            match inspect::inspect(&files) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("inspect failed: {e}");
                     ExitCode::FAILURE
                 }
             }
